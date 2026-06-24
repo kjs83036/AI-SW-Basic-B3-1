@@ -10,12 +10,12 @@
 
 | 파일명 | 역할 | 상세 설명 |
 | :--- | :--- | :--- |
-| [**`main.py`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/main.py) | **CLI REPL 진입점** | 사용자의 콘솔 입력을 받아 파싱 및 토큰화하고, 해당 명령어를 Redis 핵심 컨트롤러로 라우팅하는 무한 루프 환경을 실행합니다. |
-| [**`mini_redis.py`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/mini_redis.py) | **Redis 핵심 컨트롤러** | 해시맵, 이중 연결 리스트, 최소 힙을 총괄하여 데이터베이스 동작 및 명령어를 실행하고, 메모리 제한 및 만료 라이프사이클을 제어합니다. |
-| [**`hash_map.py`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/hash_map.py) | **배열 기반 체이닝 해시맵** | 고정 크기 배열 내에서 커스텀 해시 함수(DJB2 기반)를 사용해 인덱스를 얻고, 충돌 시 이중 연결 리스트를 활용한 체이닝 방식으로 해결합니다. 로드 팩터가 **0.75 초과 시 버킷 크기를 2배 확장하고 재해싱(`_resize`)**합니다. |
-| [**`doubly_linked_list.py`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/doubly_linked_list.py) | **이중 연결 리스트** | 노드 간 `prev`/`next` 연결 관계를 관리합니다. LRU 우선순위 갱신 및 만료/퇴출 시 임의 노드를 **\(O(1)\)**에 신속하게 격리 및 삽입할 수 있는 포인터 연산을 담당합니다. |
-| [**`min_heap.py`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/min_heap.py) | **최소 힙 (이진 힙)** | 1차원 동적 배열상에서 부모/자식 간 인덱스 연산으로 트리 구조를 모사하여 `_heapify_up`/`_heapify_down`을 통해 `(expire_at, key)` 요소를 만료 시간 기준으로 정렬 및 추출합니다. |
-| [**`srs.md`**](file:///Users/kotaro83038303/.CMVolumes/프로트수/codyssey/antigravity/B3-1-2/last_output/mini_redis/srs.md) | **요구사항 정의서** | 과제의 공통 요구사항, 예외 조건, 엣지 케이스별 처리 기준을 서술해둔 참조 문서입니다. |
+| [**`main.py`**](./main.py) | **CLI REPL 진입점** | 사용자의 콘솔 입력을 받아 파싱 및 토큰화하고, 해당 명령어를 Redis 핵심 컨트롤러로 라우팅하는 무한 루프 환경을 실행합니다. |
+| [**`mini_redis.py`**](./mini_redis.py) | **Redis 핵심 컨트롤러** | 해시맵, 이중 연결 리스트, 최소 힙을 총괄하여 데이터베이스 동작 및 명령어를 실행하고, 메모리 제한 및 만료 라이프사이클을 제어합니다. |
+| [**`hash_map.py`**](./hash_map.py) | **배열 기반 체이닝 해시맵** | 고정 크기 배열 내에서 커스텀 해시 함수(DJB2 기반)를 사용해 인덱스를 얻고, 충돌 시 이중 연결 리스트를 활용한 체이닝 방식으로 해결합니다. 로드 팩터가 **0.75 초과 시 버킷 크기를 2배 확장하고 재해싱(`_resize`)**합니다. |
+| [**`doubly_linked_list.py`**](./doubly_linked_list.py) | **이중 연결 리스트** | 노드 간 `prev`/`next` 연결 관계를 관리합니다. LRU 우선순위 갱신 및 만료/퇴출 시 임의 노드를 **\(O(1)\)**에 신속하게 격리 및 삽입할 수 있는 포인터 연산을 담당합니다. |
+| [**`min_heap.py`**](./min_heap.py) | **최소 힙 (이진 힙)** | 1차원 동적 배열상에서 부모/자식 간 인덱스 연산으로 트리 구조를 모사하여 `_heapify_up`/`_heapify_down`을 통해 `(expire_at, key)` 요소를 만료 시간 기준으로 정렬 및 추출합니다. |
+| [**`srs.md`**](./srs.md) | **요구사항 정의서** | 과제의 공통 요구사항, 예외 조건, 엣지 케이스별 처리 기준을 서술해둔 참조 문서입니다. |
 
 ---
 
