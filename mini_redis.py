@@ -1,84 +1,43 @@
-"""Mini Redis 핵심 로직.
-
-사용 자료구조:
-  - HashMap      : key → Node (O(1) 조회)
-  - DoublyLinkedList : LRU 순서 유지
-  - MinHeap      : TTL 만료 순서 관리 (lazy-deletion)
-"""
-
+from hash_map import Hash_map
+from doubly_linked_list import Doubly_linked_list, Node
+from min_heap import Min_heap
 import time
 
-from hash_map import HashMap
-from linked_list import DoublyLinkedList, Node
-from min_heap import MinHeap
 
+HELP_TEXT = """Mini Redis 명령어 도움말:
+  SET key value            : 키-값 저장 (maxmemory 초과 시 LRU 제거)
+  GET key                  : 값 조회
+  DEL key                  : 키 삭제
+  EXISTS key               : 존재 여부 확인
+  DBSIZE                   : 저장된 키 수
+  KEYS                     : 전체 키 목록
+  CONFIG SET maxmemory N   : 최대 메모리 설정 (0 = 무제한)
+  INFO memory              : 메모리 사용량 조회
+  EXPIRE key N             : TTL 설정 (초)
+  TTL key                  : 남은 만료 시간 조회
+  HELP                     : 도움말 출력
+  exit / quit              : 종료"""
 
 class MiniRedis:
-    """명령어 파싱·실행·자료구조 조율 담당"""
 
     def __init__(self):
-        self._store = HashMap()          # key → Node
-        self._lru_list = DoublyLinkedList()
-        self._ttl_heap = MinHeap()       # (expire_at, key)
+        self._store = Hash_map()          # key → Node
+        self._lru_list = Doubly_linked_list()
+        self._ttl_heap = Min_heap()       # (expire_at, key)
         self._maxmemory = 0              # 0 = 무제한
         self._used_memory = 0
         self._evicted_keys = 0
 
-    # ── 공개 진입점 ───────────────────────────────────────
-
-    def execute(self, line):
-        """입력 줄을 파싱해 명령어 실행 후 결과 문자열 반환"""
-        tokens = self._tokenize(line)
-        if not tokens:
-            return None
-        cmd = tokens[0].upper()
-        args = tokens[1:]
-
-        dispatch = {
-            'SET':    self._cmd_set,
-            'GET':    self._cmd_get,
-            'DEL':    self._cmd_del,
-            'EXISTS': self._cmd_exists,
-            'DBSIZE': self._cmd_dbsize,
-            'KEYS':   self._cmd_keys,
-            'CONFIG': self._cmd_config,
-            'INFO':   self._cmd_info,
-            'EXPIRE': self._cmd_expire,
-            'TTL':    self._cmd_ttl,
-        }
-        if cmd in dispatch:
-            return dispatch[cmd](args)
-        return f"(error) ERR unknown command '{cmd}'"
-
-    # ── 토크나이저 ────────────────────────────────────────
-
-    @staticmethod
-    def _tokenize(line):
-        """공백 분리, 큰따옴표 문자열 지원"""
-        tokens = []
-        current = []
-        in_quote = False
-        for ch in line:
-            if ch == '"':
-                in_quote = not in_quote
-            elif ch == ' ' and not in_quote:
-                if current:
-                    tokens.append(''.join(current))
-                    current = []
-            else:
-                current.append(ch)
-        if current:
-            tokens.append(''.join(current))
-        return tokens
-
-    # ── 내부 헬퍼 ─────────────────────────────────────────
-
     def _evict_expired(self):
-        """만료된 키 lazy-deletion: 명령 실행 전 호출"""
+        """
+        만료 시간이 지난 키들을 최소 힙에서 순차적으로 꺼내 데이터베이스에서 실시간 삭제(Lazy-deletion)합니다.
+        모든 데이터 조회/수정 명령 실행 전에 가장 먼저 호출되어 데이터 정합성을 유지합니다.
+        """
         now = time.time()
         while self._ttl_heap.size() > 0:
             entry = self._ttl_heap.peek()
-            expire_at, key = entry
+            if entry:
+                expire_at, key = entry[0], entry[1]
             if expire_at > now:
                 break
             self._ttl_heap.pop()
@@ -88,54 +47,79 @@ class MiniRedis:
                 self._delete_key(key)
 
     def _delete_key(self, key):
-        """키 완전 삭제 (store + lru_list + 메모리 카운터)"""
         node = self._store.get(key)
         if node is None:
             return False
         self._lru_list.remove_node(node)
         self._store.remove(key)
-        self._used_memory -= len(key.encode('utf-8')) + len(node.value.encode('utf-8'))
+        self._used_memory -= self._byte_size(key, node.data[1])
         return True
 
-    @staticmethod
-    def _byte_size(key, value):
+    def _byte_size(self, key, value):
         return len(key.encode('utf-8')) + len(value.encode('utf-8'))
 
-    # ── 명령어 구현 ───────────────────────────────────────
+    def set(self, args):
+        """
+        key-value 데이터를 저장합니다. 
+        만약 maxmemory 설정이 되어 있고, 새 데이터를 포함한 사용량이 이를 초과할 경우
+        사용량이 한도 내로 떨어질 때까지 LRU 리스트의 뒤쪽 노드부터 차례로 삭제(Eviction)합니다.
+        """
+        # - SET key value
+        # -성공시 ok
+        # -메모리 초과시 LRU제거 수행
+        # -기존키를 덮어쓰는경우: 기존 TTL은 "초기화(삭제)"
 
-    def _cmd_set(self, args):
+        # - LRU제거 규칙
+        # -maxmemory>0
+        # -SET이후 used_memory 가 maxmemory를 초과하면 used_memory가 maxmemory 이하가 될떄까지 LRU로 제거
+        # -제거된 키는 evicted_keys에 누적
+        # - 단일 엔트리가 maxmemory를 초과-> 저장x, oom에러 출력
         if len(args) != 2:
             return "(error) ERR wrong number of arguments for 'SET' command"
         key, value = args[0], args[1]
         self._evict_expired()
-
         new_size = self._byte_size(key, value)
 
-        # 기존 키가 있으면 먼저 제거 (크기 차감, LRU에서 분리)
+        # [엣지케이스 방어] 새로 삽입하려는 데이터의 크기가 maxmemory 한도보다 크다면,
+        # 기존 데이터를 삭제(Evict)하지 않고 즉시 OOM 에러를 반환하여 데이터를 보호합니다.
+        if self._maxmemory > 0 and new_size > self._maxmemory:
+            return "(error) OOM command not allowed when used_memory > 'maxmemory'"
+
         if self._store.contains(key):
             old_node = self._store.get(key)
-            old_size = self._byte_size(key, old_node.value)
+            if old_node:
+                old_size = self._byte_size(key, old_node.data[1])
             self._lru_list.remove_node(old_node)
             self._store.remove(key)
             self._used_memory -= old_size
 
-        # maxmemory 초과 시 LRU 제거
         if self._maxmemory > 0:
             while self._used_memory + new_size > self._maxmemory:
                 evicted = self._lru_list.remove_back()
                 if evicted is None:
                     return "(error) OOM command not allowed when used_memory > 'maxmemory'"
-                self._store.remove(evicted.key)
-                self._used_memory -= self._byte_size(evicted.key, evicted.value)
+                self._store.remove(evicted.data[0])
+                self._used_memory -= self._byte_size(
+                    evicted.data[0], evicted.data[1])
                 self._evicted_keys += 1
 
-        node = Node(key, value)
+        node = Node((key, value))
         self._lru_list.insert_front(node)
         self._store.put(key, node)
         self._used_memory += new_size
         return "OK"
 
-    def _cmd_get(self, args):
+    def get(self, args):
+        """
+        지정된 key의 value를 조회합니다.
+        조회에 성공할 경우, 해당 노드를 LRU 리스트의 맨 앞으로 이동시켜 참조 순위를 갱신합니다.
+        존재하지 않거나 이미 만료된 키일 경우 'nil'을 반환합니다.
+        """
+        # - GET key
+        # -키가 없거나 만료 (nil)
+        # -존재하는경우 "value"형태로 반환
+        # -반환이 성공한 경우 LRU갱신
+
         if len(args) != 1:
             return "(error) ERR wrong number of arguments for 'GET' command"
         key = args[0]
@@ -144,29 +128,43 @@ class MiniRedis:
         if node is None:
             return "(nil)"
         self._lru_list.move_to_front(node)
-        return f'"{node.value}"'
+        return f'"{node.data[1]}"'
 
-    def _cmd_del(self, args):
+    def delete(self, args):
+
+        # - DEL key
+        # -삭제 성공 (integer)1, 없으면 (integer) 0
+        # -삭제시 LRU/TTL관련 구조에서도 해당 엔트리를 함께 제거
         if len(args) != 1:
             return "(error) ERR wrong number of arguments for 'DEL' command"
         key = args[0]
         self._evict_expired()
         return "(integer) 1" if self._delete_key(key) else "(integer) 0"
 
-    def _cmd_exists(self, args):
+    def exists(self, args):
+
+        # - EXIST key
+        # -존재하면 (integer1), 없으면 (integer) 0
         if len(args) != 1:
             return "(error) ERR wrong number of arguments for 'EXISTS' command"
         key = args[0]
         self._evict_expired()
         return "(integer) 1" if self._store.contains(key) else "(integer) 0"
 
-    def _cmd_dbsize(self, args):
+    def dbsize(self, args):
+
+        # - DBSIZE
+        # -현재 저장된 키 개수를 (integer)N으로 반환
         if args:
             return "(error) ERR wrong number of arguments for 'DBSIZE' command"
         self._evict_expired()
         return f"(integer) {self._store.size()}"
 
-    def _cmd_keys(self, args):
+    def keys(self, args):
+
+        # - KEYS
+        # - 전체 키 목록을 배열 형태로 출력(정렬은 필요 X)
+        # - 키가 없으면 (empty array)로 표시가능
         if args:
             return "(error) ERR wrong number of arguments for 'KEYS' command"
         self._evict_expired()
@@ -175,7 +173,12 @@ class MiniRedis:
             return "(empty array)"
         return '\n'.join(f'{i + 1}. "{k}"' for i, k in enumerate(all_keys))
 
-    def _cmd_config(self, args):
+    def config(self, args):
+
+        # - CONFIG SET maxmemory bytes
+        # -bytes는 0이상 정수
+        # -0은 무제한으로 간주
+        # - 성공시 OK, 정수 파싱 실패시 에러표준
         if len(args) < 2:
             return "(error) ERR wrong number of arguments for 'CONFIG' command"
         sub = args[0].upper()
@@ -195,7 +198,7 @@ class MiniRedis:
             return f"(error) ERR unknown config parameter '{args[1]}'"
         return f"(error) ERR unknown subcommand '{args[0]}'"
 
-    def _cmd_info(self, args):
+    def info(self, args):
         if len(args) != 1:
             return "(error) ERR wrong number of arguments for 'INFO' command"
         if args[0].lower() != 'memory':
@@ -205,8 +208,17 @@ class MiniRedis:
             f"maxmemory:{self._maxmemory}\n"
             f"evicted_keys:{self._evicted_keys}"
         )
+        # -used_memory:<number>
+        # -maxmemory:<number>
+        # -victed_keys:<number>a
 
-    def _cmd_expire(self, args):
+    def expire(self, args):
+        """
+        특정 key에 대한 만료 시간(초 단위)을 설정합니다.
+        설정된 만료 시각(현재시간 + 초) 정보는 최소 힙(self._ttl_heap)에 저장되어
+        주기적으로 혹은 lazy-deletion 시점에 만료 판정 기준으로 쓰입니다.
+        만약 입력된 초(seconds)가 0 이하일 경우 즉시 만료되어 키를 삭제합니다.
+        """
         if len(args) != 2:
             return "(error) ERR wrong number of arguments for 'EXPIRE' command"
         key = args[0]
@@ -223,11 +235,21 @@ class MiniRedis:
             return "(integer) 1"
         expire_at = time.time() + seconds
         node = self._store.get(key)
-        node.expire_at = expire_at
-        self._ttl_heap.push(expire_at, key)
+        if node:
+            node.expire_at = expire_at
+        self._ttl_heap.push((expire_at, key))
         return "(integer) 1"
+        # - EXPIRE key seconds
+        # -key없으면 (integer)0
+        # -seconds가 0 이하라면 "즉시만료"처리 가능
+        # -정상설정시 (integer)1
 
-    def _cmd_ttl(self, args):
+    def ttl(self, args):
+        """
+        특정 key의 남은 수명(TTL, Time To Live)을 초 단위로 반환합니다.
+        키가 존재하지 않거나 이미 만료된 경우 -2를 반환하고,
+        키는 존재하지만 만료 시간이 지정되어 있지 않은 경우 -1을 반환합니다.
+        """
         if len(args) != 1:
             return "(error) ERR wrong number of arguments for 'TTL' command"
         key = args[0]
@@ -242,3 +264,10 @@ class MiniRedis:
             self._delete_key(key)
             return "(integer) -2"
         return f"(integer) {int(remaining)}"
+        # - TTL key
+        # -key가 없으면 (integer)-2
+        # -key는 존재하시만 만료시간이 없으면 (integer)-1
+        # -만료시간이 있으면 남은초를 (integer)N으로 반환
+    
+    def help(self, args):
+        return HELP_TEXT
